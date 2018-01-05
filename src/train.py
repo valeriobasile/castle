@@ -2,92 +2,136 @@
 import logging as log
 import sys
 import numpy as np
-from random import seed, random, shuffle
+from random import seed, random, shuffle, sample
 from scipy.spatial.distance import cosine
 from tqdm import tqdm
 from itertools import izip, product
 import matplotlib.pyplot as plt
 import numpy.random as rnd
 from math import ceil
+from optparse import OptionParser
+from os.path import abspath, dirname, isfile
+from vector import VectorPairReader
 
-LANG = 'en'
-with open('dependency_list.conll2009.semantic.short') as f:
-    dependencies = map(lambda x: x.strip(), f.readlines())
-#dependencies = ['nsubja', 'nsubjv', 'nsubjr', 'nsubjn', 'nsubjpass', 'dobj', 'iobj']
+parser = OptionParser()
+parser.add_option('-i',
+                  '--input',
+                  dest="input_file",
+                  help="read training vector pairs from FILE",
+                  metavar="FILE")
+parser.add_option('-d',
+                  '--input-dir',
+                  dest="input_dir",
+                  help="read training vector pairs for contrastive learing from DIRECTORY",
+                  metavar="DIRECTORY")
+parser.add_option('-o',
+                  '--output',
+                  dest="output_file",
+                  default='tensor.txt',
+                  help="write tensor to FILE",
+                  metavar="FILE")
+parser.add_option('-l',
+                  '--learning-rate',
+                  dest="learningrate",
+                  default="0.05",
+                  help="learning rate for the gradient descent (default: 0.05)")
+parser.add_option('-c',
+                  '--contrastive',
+                  default="0.0",
+                  dest="contrastive",
+                  help="parameter for contrastive learning (default: 0)")
+parser.add_option('-e',
+                  '--epochs',
+                  dest="epochs",
+                  default="100",
+                  help="maximum number of training epochs (default: 100)")
+parser.add_option('-t',
+                  '--threshold',
+                  dest="threshold",
+                  default="0.0",
+                  help="stop training when the error is below this threshold (default: 0)")
+#TODO option for online learning without reading all the vectors into memory first
 
-# configuration
+(options, args) = parser.parse_args()
+
+# check option values
+if options.input_file and isfile(options.input_file):
+    input_file = options.input_file
+else:
+    log.error("invalid input file: {0}, exiting".format(options.input_file))
+    parser.print_usage()
+    sys.exit(1)
+
+if not options.input_dir:
+    input_dir = dirname(abspath(options.input_file))
+else:
+    input_dir = options.input_dir
+
+if eval(options.learningrate) > 0.0:
+    learningrate = eval(options.learningrate)
+else:
+    log.error("invalid value for learning rate: {0}, exiting".format(options.learningrate))
+    parser.print_usage()
+    sys.exit(1)
+
+if eval(options.contrastive) >= 0.0 and eval(options.contrastive) <= 1.0:
+    contrastive = eval(options.contrastive)
+else:
+    log.error("invalid value for contrastive factor: {0}, exiting".format(options.contrastive))
+    parser.print_usage()
+    sys.exit(1)
+
+if eval(options.epochs) > 1:
+    epochs = eval(options.epochs)
+else:
+    log.error("invalid value for epochs: {0}, exiting".format(options.epochs))
+    parser.print_usage()
+    sys.exit(1)
+
+if eval(options.threshold) >= 0.0:
+    threshold = eval(options.threshold)
+else:
+    log.error("invalid value for threshold: {0}, exiting".format(options.threshold))
+    parser.print_usage()
+    sys.exit(1)
+
+
+# static configuration
 np.seterr(divide='ignore', invalid='ignore')
 log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%m/%d/%Y %I:%M:%S')
 
-# avoid np.inner
+# workaround to avoid np.inner for numerical precision reasons
 def dotp(x,y):
     return sum(x[:]*y[:])
 
+# read training data
+training_pairs = []
+log.info ("reading input file {0}".format(input_file))
+dr = VectorPairReader(input_file)
+for v1, v2 in dr:
+    training_pairs.append((v1, v2))
+dimensions = len(training_pairs[0][0])
 
-class VectorPairReader(object):
-    def __init__(self, datafile, cutoff=None):
-        self.datafile = datafile
-        self.cutoff = cutoff
-
-    def __iter__(self):
-        with open(self.datafile)as f:
-            i = 0
-            for line in f:
-                fields = line.rstrip().split(' ')
-                vector1 = map(lambda x: np.longdouble(eval(x)), fields[:len(fields)/2])
-                vector2 = map(lambda x: np.longdouble(eval(x)), fields[len(fields)/2:])
-                i += 1
-                if self.cutoff and i > self.cutoff:
-                    break
-                yield vector1, vector2
-
-    def __len__(self):
-        i = 0
-        with open(self.datafile)as f:
-            for line in f:
-                i += 1
-        return i
-
-# read arguments
-data_dir = sys.argv[1]
-target_dependency = sys.argv[2]
-dimensions = eval(sys.argv[3])
-learningrate = eval(sys.argv[4])
-adversarial = eval(sys.argv[5])
+contrastive_training_pairs = []
+if contrastive > 0.0:
+    for root, dirs, files in os.walk(input_dir, topdown=False):
+        for contrastive_input_file in files:
+            log.info ("reading input file {0} for constrastive learning".format(contrastive_input_file))
+            dr = VectorPairReader(contrastive_input_file)
+            for v1, v2 in dr:
+                contrastive_training_pairs.append((v1, v2))
 
 # initialize random matrix
 M = rnd.rand(dimensions, dimensions)
 
-# read training data
-training_pairs = dict()
-for dependency in dependencies:
-    training_pairs[dependency] = []
-    if dependency == target_dependency or adversarial > 0.0:
-        input_file = "{0}/{1}.{2}.txt".format(data_dir, dependency, LANG)
-        log.info ("reading input file {0}".format(input_file))
-        dr = VectorPairReader(input_file)
-        for v1, v2 in dr:
-            training_pairs[dependency].append((v1, v2))
-
-# balance datasets
-if adversarial > 0.0:
+# randomize order and balance datasets
+if contrastive > 0.0:
+    print len(contrastive_training_pairs), len(training_pairs)
     log.info ("balancing training data")
-    max_len = max([len(vector_pairs) for dependency, vector_pairs in training_pairs.iteritems()])
-    training_data = []
-    for dependency, vector_pairs in training_pairs.iteritems():
-        if dependency == target_dependency:
-            data = [(dependency, v1, v2) for v1, v2 in vector_pairs]
-        else:
-            if len(vector_pairs)>0:
-                repeat = max_len/len(vector_pairs)
-            else:
-                repeat = max_len
-            data = [(dependency, v1, v2) for v1, v2 in (vector_pairs * repeat)][:len(training_pairs[target_dependency])/(len(dependencies)-1)]
-        log.info ("adding {0} pairs ({1})".format(len(data), dependency))
-        training_data.extend(data)
-
+    contrastive_training_pairs = sample(contrastive_training_pairs, len(training_pairs))
+    training_data = [(1, v1, v2) for v1, v2 in training_pairs] + [(0, v1, v2) for v1, v2 in contrastive_training_pairs]
 else:
-    training_data = [(target_dependency, v1, v2) for v1, v2 in training_pairs[target_dependency]]
+    training_data = [(1, v1, v2) for v1, v2 in training_pairs]
 
 log.info ("shuffling training data")
 shuffle(training_data)
@@ -100,7 +144,7 @@ log.info ("starting training")
 while True:
     iteration = 0
     error = 0.0
-    for dependency, h, t in training_data:
+    for sign, h, t in training_data:
         # compute gradient analytically
         x = np.dot(M,t)
         a = (dotp(h,x) * np.outer(x,t)) / (dotp(x,x)**1.5)
@@ -110,15 +154,13 @@ while True:
         G = a-b
 
         # update the tensor
-        if dependency == target_dependency:
+        if sign == 1:
             M = np.subtract(M, (learningrate * G))
         else:
-            M = np.add(M, (learningrate * adversarial * G))
+            M = np.add(M, (learningrate * contrastive * G))
 
-        iteration += 1
-
-        # plot error
         error += cosine(x, h)
+        iteration += 1
 
     avg_error = error/float(iteration)
     error_plot.append(avg_error)
@@ -127,31 +169,12 @@ while True:
 
     # log progress
     log.info('epoch {0}, {1} iterations, error: {2:.3f} ({3:.4f})'.format(epoch+1, iteration, avg_error, error_delta))
-
     epoch += 1
 
-    #if epoch > 100 or (error_delta > -0.0001 and epoch > 1):
-    #if error_delta > -0.0001 and epoch > 1:
-    if epoch > 100:
+    if epoch > epochs or (epoch >1 and error_delta > threshold):
         break
-    
 
-
-# plot error rate
-'''
-fig, ax = plt.subplots(figsize=(8,8))
-ax.scatter(list(range(len(error_plot))), error_plot, alpha=0.1, color='blue')
-
-ax.set_xlabel("i")
-ax.set_ylabel("error")
-
-ax.set_xlim([0,len(error_plot)])
-ax.set_ylim([0,1])
-
-ax.set_title("Error plot")
-fig_name = "error_{0}.png".format(learningrate)
-fig.savefig(fig_name)
-'''
 # write tensor output
-for j in M:
-    print ' '.join(map(str, j))
+with open(options.output_file, 'w') as fo:
+    for j in M:
+        fo.write("{0}\n".format(' '.join(map(str, j))))
