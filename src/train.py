@@ -1,11 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import logging as log
 import sys
 import numpy as np
 from random import seed, random, shuffle, sample
 from scipy.spatial.distance import cosine
 from tqdm import tqdm
-from itertools import izip, product
+from itertools import product
 import matplotlib.pyplot as plt
 import numpy.random as rnd
 from math import ceil
@@ -126,7 +126,7 @@ M = rnd.rand(dimensions, dimensions)
 
 # randomize order and balance datasets
 if contrastive > 0.0:
-    print len(contrastive_training_pairs), len(training_pairs)
+    #print len(contrastive_training_pairs), len(training_pairs)
     log.info ("balancing training data")
     contrastive_training_pairs = sample(contrastive_training_pairs, len(training_pairs))
     training_data = [(1, v1, v2) for v1, v2 in training_pairs] + [(0, v1, v2) for v1, v2 in contrastive_training_pairs]

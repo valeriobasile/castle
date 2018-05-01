@@ -10,8 +10,9 @@ class VectorPairReader(object):
             i = 0
             for line in f:
                 fields = line.rstrip().split(' ')
-                vector1 = map(lambda x: np.longdouble(eval(x)), fields[:len(fields)/2])
-                vector2 = map(lambda x: np.longdouble(eval(x)), fields[len(fields)/2:])
+                mid = int(len(fields)/2)
+                vector1 = list(map(lambda x: np.longdouble(eval(x)), fields[:mid]))
+                vector2 = list(map(lambda x: np.longdouble(eval(x)), fields[mid:]))
                 i += 1
                 if self.cutoff and i > self.cutoff:
                     break
